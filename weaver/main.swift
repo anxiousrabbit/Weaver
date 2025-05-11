@@ -294,7 +294,9 @@ private class imageML {
         }
         let requestHandler = VNImageRequestHandler(cgImage: cgImage!)
         let request = VNRecognizeTextRequest(completionHandler: mlProcessing)
-        
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US"]
         do {
             try requestHandler.perform([request])
         } catch {
